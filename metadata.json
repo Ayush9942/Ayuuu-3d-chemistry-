@@ -1,0 +1,6 @@
+{
+  "name": "Ayuuu 3D Chemistry",
+  "description": "An interactive full-stack 3D molecular visualizer that allows users to search any chemistry molecule and explore its 3D atomic structures, physical properties, safety sheets, and history, powered by React, Tailwind CSS, React Three Fiber, and Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

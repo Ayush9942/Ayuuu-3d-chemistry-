@@ -26,6 +26,7 @@ import { MoleculeCanvas } from "./components/MoleculeCanvas";
 import { Atom as AtomType, MoleculeData } from "./types";
 import { PREDEFINED_MOLECULES, PREDEFINED_KEYS } from "./data/predefinedMolecules";
 import { getElement } from "./data/elements";
+import { synthesizeMoleculeClientSide } from "./lib/geminiClient";
 
 const LOADING_STEPS = [
   "Formulating electron orbitals...",
@@ -108,7 +109,7 @@ export default function App() {
     setSelectedAtom(atom);
   };
 
-  // Perform search (local or backend Gemini query)
+  // Perform search (local, direct client-side Gemini, or backend Express endpoint fallback)
   const handleSearch = async (queryStr: string) => {
     const cleanQuery = queryStr.trim().toLowerCase();
     if (!cleanQuery) return;
@@ -116,13 +117,72 @@ export default function App() {
     setError(null);
     setSelectedAtom(null);
 
-    // 1. Check if it's in our predefined list first for instant load
-    const matchedPredefinedKey = PREDEFINED_KEYS.find(
-      (k) =>
-        k === cleanQuery ||
-        PREDEFINED_MOLECULES[k].name.toLowerCase() === cleanQuery ||
-        PREDEFINED_MOLECULES[k].formula.toLowerCase() === cleanQuery.replace(/[₂,₃,₄]/g, "")
-    );
+    // Dynamic alias dictionary for intelligent local matches
+    const aliases: Record<string, string> = {
+      "table salt": "nacl",
+      "salt": "nacl",
+      "sodium chloride": "nacl",
+      "nacl": "nacl",
+      "sugar": "glucose",
+      "d-glucose": "glucose",
+      "glucose": "glucose",
+      "c6h12o6": "glucose",
+      "aspirin": "aspirin",
+      "acetylsalicylic acid": "aspirin",
+      "c9h8o4": "aspirin",
+      "adrenaline": "adrenaline",
+      "epinephrine": "adrenaline",
+      "c9h13no3": "adrenaline",
+      "water": "water",
+      "h2o": "water",
+      "oxidane": "water",
+      "carbon dioxide": "co2",
+      "co2": "co2",
+      "methane": "methane",
+      "ch4": "methane",
+      "natural gas": "methane",
+      "alcohol": "ethanol",
+      "ethanol": "ethanol",
+      "c2h5oh": "ethanol",
+      "drinking alcohol": "ethanol",
+      "benzene": "benzene",
+      "c6h6": "benzene",
+      "caffeine": "caffeine",
+      "coffee": "caffeine",
+      "c8h10n4o2": "caffeine",
+      "ammonia": "ammonia",
+      "nh3": "ammonia",
+      "propane": "propane",
+      "c3h8": "propane",
+      "acetone": "acetone",
+      "propanone": "acetone",
+      "c3h6o": "acetone",
+      "nail polish": "acetone",
+      "ethylene": "ethylene",
+      "ethene": "ethylene",
+      "c2h4": "ethylene",
+      "methanol": "methanol",
+      "wood alcohol": "methanol",
+      "ch3oh": "methanol",
+      "hydrochloric acid": "hcl",
+      "muriatic acid": "hcl",
+      "hcl": "hcl",
+    };
+
+    // Try finding direct alias first
+    let matchedPredefinedKey = aliases[cleanQuery];
+
+    // If not found in direct aliases, search in names or formulas
+    if (!matchedPredefinedKey) {
+      matchedPredefinedKey = PREDEFINED_KEYS.find(
+        (k) =>
+          k === cleanQuery ||
+          PREDEFINED_MOLECULES[k].name.toLowerCase() === cleanQuery ||
+          PREDEFINED_MOLECULES[k].name.toLowerCase().includes(cleanQuery) ||
+          PREDEFINED_MOLECULES[k].formula.toLowerCase() === cleanQuery.replace(/[₂,₃,₄,₅,₆,₈,₉,₁₀,₁₂,₁₃]/g, "") ||
+          PREDEFINED_MOLECULES[k].formula.toLowerCase().replace(/[₂₃₄₅₆₈₉]/g, "") === cleanQuery.replace(/[₂₃₄₅₆₈₉]/g, "")
+      );
+    }
 
     if (matchedPredefinedKey) {
       setCurrentMolecule(PREDEFINED_MOLECULES[matchedPredefinedKey]);
@@ -131,14 +191,35 @@ export default function App() {
       return;
     }
 
-    // 2. Query our full-stack Express API endpoint for Gemini generation
     setIsLoading(true);
+
+    // Try client-side synthesis directly if client has VITE_GEMINI_API_KEY
+    const clientSideApiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
+    if (clientSideApiKey) {
+      try {
+        console.log("Synthesizing molecule client-side via VITE_GEMINI_API_KEY...");
+        const data = await synthesizeMoleculeClientSide(queryStr, clientSideApiKey);
+        setCurrentMolecule(data);
+        setSelectedMoleculeKey(""); // Custom search loaded
+        setSearchQuery("");
+        setIsLoading(false);
+        return;
+      } catch (err: any) {
+        console.error("Client-side synthesis failed, falling back to server:", err);
+      }
+    }
+
+    // Fallback to full-stack Express API endpoint
     try {
       const response = await fetch("/api/molecule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: queryStr }),
       });
+
+      if (response.status === 404) {
+        throw new Error("SERVER_NOT_AVAILABLE");
+      }
 
       const data = await response.json();
 
@@ -164,10 +245,17 @@ export default function App() {
       setSearchQuery("");
     } catch (err: any) {
       console.error(err);
-      setError({
-        type: "CONNECTION_ERROR",
-        message: "Unable to contact the synthesis server. Check your network.",
-      });
+      if (err.message === "SERVER_NOT_AVAILABLE") {
+        setError({
+          type: "VERCEL_STATIC_HOSTING",
+          message: "The backend synthesis server is offline because this website is hosted statically on Vercel. Dynamic generation is supported by configuring client-side keys.",
+        });
+      } else {
+        setError({
+          type: "CONNECTION_ERROR",
+          message: "Unable to contact the synthesis server. Check your network.",
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -337,9 +425,17 @@ export default function App() {
                     {error.type === "API_KEY_MISSING" ? (
                       <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl text-left max-w-md text-xs text-slate-400 flex flex-col gap-2">
                         <span className="font-bold text-indigo-400 uppercase tracking-wide">How to resolve:</span>
-                        <p>1. Open the **Secrets** panel in the AI Studio environment sidebar/menu.</p>
+                        <p>1. Open the **Secrets** panel in your development environment.</p>
                         <p>2. Add a new secret named <code className="text-slate-200 font-mono">GEMINI_API_KEY</code> with your free Google Gemini API Key.</p>
-                        <p>3. Refresh or try searching again! Custom generation will work instantly.</p>
+                        <p>3. Refresh or search again! Generation will work instantly.</p>
+                      </div>
+                    ) : error.type === "VERCEL_STATIC_HOSTING" ? (
+                      <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl text-left max-w-md text-xs text-slate-400 flex flex-col gap-2">
+                        <span className="font-bold text-emerald-400 uppercase tracking-wide">Vercel Deployment Guide:</span>
+                        <p>Because Vercel static environments do not run Node.js backend servers, configure a client-side API key:</p>
+                        <p className="mt-1">1. Add <code className="text-slate-200 font-mono">VITE_GEMINI_API_KEY</code> to your **Vercel Project Environment Variables**.</p>
+                        <p>2. Deploy or reload, and dynamic custom searches will run securely and directly client-side!</p>
+                        <p className="mt-1 text-slate-500">In the meantime, click any predefined compound (such as **Sodium Chloride** or **Water**) below to explore stunning 3D orbits instantly offline!</p>
                       </div>
                     ) : (
                       <button
